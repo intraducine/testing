@@ -116,11 +116,7 @@ def main():
             persist()
             device = read(['xcrun', 'simctl', 'create', 'Synthetic Iridium Activity', model['identifier'], runtime['identifier']])
             run(['xcrun', 'simctl', 'boot', device])
-            deadline = time.monotonic() + 180
-            while run(['xcrun', 'simctl', 'spawn', device, 'launchctl', 'list'], timeout=15, check=False).returncode:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError('Disposable simulator did not become spawn-ready within 180 seconds')
-                time.sleep(3)
+            run(['xcrun', 'simctl', 'bootstatus', device, '-b'], timeout=180)
             run(['xcrun', 'simctl', 'ui', device, 'appearance', 'dark'])
             base = ['xcodebuild', '-project', str(project), '-scheme', 'ActivityDemo', '-configuration', 'Debug',
                     '-sdk', 'iphonesimulator', '-destination', f'id={device}', '-derivedDataPath', str(build / 'DerivedData'),
