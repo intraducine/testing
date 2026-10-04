@@ -1,0 +1,61 @@
+name: Synthetic Iridium Live Activity captures
+on:
+  push:
+    branches: [activity-capture-f9187c8]
+    paths: ['.github/workflows/capture.yml', 'demo/**', 'scripts/**']
+permissions:
+  contents: read
+concurrency:
+  group: activity-capture-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  capture:
+    if: github.repository == 'intraducine/testing'
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: intraducine/iridium
+          ref: f9187c8eeeda4f2b986744f4a003ec6d5643708d
+          path: upstream
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /LICENSE
+            /iridium/apps/ios/SteamActivityShared/
+            /iridium/apps/ios/SteamDownloadWidget/
+            /iridium/apps/ios/Iridium/SteamDownloadActivity.swift
+      - name: Validate the capture harness
+        run: python3 -B -m unittest discover -s scripts -p 'test_*.py'
+      - name: Build and capture synthetic states
+        run: python3 -B scripts/capture.py --upstream upstream --output .artifacts
+      - name: Retain small previews and capture manifest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: activity-preview-${{ github.sha }}
+          path: |
+            .artifacts/preview/
+            .artifacts/manifest.json
+            .artifacts/environment.json
+            .artifacts/commands.log
+            .artifacts/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Retain full native captures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: activity-captures-${{ github.sha }}
+          path: |
+            .artifacts/components/
+            .artifacts/system/
+            .artifacts/app-events.json
+            .artifacts/manifest.json
+            .artifacts/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 3
