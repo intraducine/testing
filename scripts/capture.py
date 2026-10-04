@@ -137,7 +137,7 @@ def main():
                 shutil.copytree(generated / name, output / name)
             results = build / 'Capture.xcresult'
             run([*base, '-resultBundlePath', str(results), '-parallel-testing-enabled', 'NO',
-                 '-test-iterations', '1', 'test-without-building'], timeout=600)
+                 'test-without-building'], timeout=600)
             system = output / 'system'
             run(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(results), '--output-path', str(system)])
             shutil.copy2(generated / 'app-events.json', output / 'app-events.json')
