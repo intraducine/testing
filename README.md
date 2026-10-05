@@ -65,6 +65,15 @@ iOS 18+ runtime and a new disposable Dynamic Island iPhone simulator, then attem
 both shutdown and deletion. No SDK or third-party tool installation is attempted.
 Simulator installation gets one bounded 180-second attempt. Its completion time
 is recorded in commands.log; a timeout remains fatal and stops launch/UI tests.
+On failure, native diagnostic commands share a 75-second deadline and retain scoped process/service logs,
+an app stack sample when a PID is present, recent synthetic app crash reports,
+startup markers and partial images before simulator deletion. Missing, failed or
+truncated diagnostics are recorded. Launch is not retried and its limit remains 60 seconds.
+Retained command output is capped at 256 KiB; crash-report reads at 512 KiB each.
+temporary raw output and local filesystem work have no strict total time or storage bound.
+The original synthetic landscape and 80×40 JPEG are prepared with UIKit/CoreGraphics
+in app initialization, after an artwork-started marker and before SwiftUI view evaluation.
+Rendering/encoding failures are recorded and prevent component/payload readiness.
 
 The patch step verifies its manifest and patch SHA256, all seven before/after
 source hashes, a clean exact base checkout, and the resulting full Git tree.

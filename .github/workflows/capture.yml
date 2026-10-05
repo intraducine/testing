@@ -51,6 +51,7 @@ jobs:
             .artifacts/payload-checks.json
             .artifacts/components/manifest.json
             .artifacts/commands.log
+            .artifacts/diagnostics/
             .artifacts/SHA256SUMS
           if-no-files-found: warn
           retention-days: 3

@@ -68,6 +68,101 @@ def write_checksums(output):
         f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(output)}\n' for p in files))
 
 
+def failure_evidence(device, output, clean, log, since):
+    """Best-effort evidence before deletion; never retry launch or replace its error."""
+    folder = output / 'diagnostics'
+    folder.mkdir(exist_ok=True)
+    deadline = time.monotonic() + 75
+    records = []
+    device_data = Path.home() / 'Library/Developer/CoreSimulator/Devices' / device / 'data'
+    def attempt(name, argv, timeout):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            records.append({'name': name, 'status': 'skipped; diagnostic deadline'})
+            return ''
+        record = {'name': name, 'command': clean(repr(argv))}
+        raw = folder / (name + '.raw')
+        try:
+            with raw.open('w') as stream:
+                result = subprocess.run(argv, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
+                    text=True, timeout=min(timeout, remaining), check=False)
+            record.update(status='returned', exit_code=result.returncode)
+        except Exception as error:
+            record.update(status='failed', error=clean(str(error)))
+        finally:
+            size = raw.stat().st_size if raw.exists() else 0
+            with raw.open('rb') if raw.exists() else open('/dev/null', 'rb') as stream:
+                stream.seek(max(0, size - 262_144)); data = stream.read(262_144)
+            raw.unlink(missing_ok=True)
+        text = clean(data[-262_144:].decode(errors='replace'))
+        if name == 'processes':
+            text = '\n'.join(line for line in text.splitlines() if re.search(
+                r'ActivityDemo|SteamDownloadWidget|CoreSimulatorService|launchd_sim|SpringBoard|backboardd|runningboardd|installd|simctl', line))
+        encoded = text.encode()
+        text = encoded[-262_144:].decode(errors='ignore')
+        (folder / (name + '.log')).write_text(text)
+        record.update(output_bytes=size, truncated=size > 262_144 or len(encoded) > 262_144)
+        records.append(record)
+        log.write('$ diagnostic ' + json.dumps(record) + '\n'); log.flush()
+        return data.decode(errors='replace') if record.get('exit_code') == 0 else ''
+    processes = attempt('processes', ['ps', '-axo', 'pid,ppid,etime,stat,pcpu,comm'], 5)
+    for line in processes.splitlines():
+        if str(device_data) in line and '.app/ActivityDemo' in line and line.split()[0].isdigit():
+            attempt('app-sample', ['sample', line.split()[0], '2', '10'], 8)
+            break
+    container = attempt('container', ['xcrun', 'simctl', 'get_app_container', device, BUNDLE, 'data'], 8).strip()
+    copied = []; copy_errors = []; image_bytes = 0
+    if container:
+        try:
+            generated = Path(container).resolve() / 'Documents/activity-captures'
+            if not generated.is_relative_to(device_data.resolve()):
+                raise ValueError('Diagnostic container is outside the disposable simulator')
+            for relative in ['startup-progress.json', 'payload-checks.json', 'app-events.json',
+                             'components/manifest.json', *[str(p.relative_to(generated)) for kind in ['components', 'preview']
+                                 for p in sorted((generated / kind).glob('*.png'))]][:86]:
+                source = generated / relative
+                if not source.is_file() or source.is_symlink():
+                    continue
+                if not source.resolve().is_relative_to(generated):
+                    raise ValueError('Diagnostic app file is outside its capture directory')
+                target = folder / 'app' / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if source.suffix == '.png':
+                    size = source.stat().st_size
+                    if image_bytes + size > 8 * 1024 * 1024:
+                        copy_errors.append(relative + ': exceeds 8 MiB diagnostic PNG budget'); continue
+                    shutil.copyfile(source, target); image_bytes += size
+                else:
+                    with source.open('rb') as stream: data = stream.read(262_144)
+                    target.write_text(clean(data[:262_144].decode(errors='replace')))
+                    if source.stat().st_size > 262_144: copy_errors.append(relative + ': truncated at 256 KiB')
+                copied.append(relative)
+        except Exception as error:
+            copy_errors.append(clean(str(error)))
+    attempt('failure-screen', ['xcrun', 'simctl', 'io', device, 'screenshot', str(folder / 'failure-screen.png')], 8)
+    predicate = 'process IN {"ActivityDemo", "SteamDownloadWidget", "SpringBoard", "runningboardd", "backboardd", "installd"}'
+    attempt('simulator-log', ['xcrun', 'simctl', 'spawn', device, 'log', 'show', '--last', '3m',
+                            '--style', 'compact', '--predicate', predicate], 15)
+    attempt('services', ['xcrun', 'simctl', 'spawn', device, 'launchctl', 'print', 'system'], 8)
+    attempt('host-log', ['log', 'show', '--last', '3m', '--style', 'compact', '--predicate',
+        f'process == "CoreSimulatorService" AND (eventMessage CONTAINS "{device}" OR eventMessage CONTAINS "{BUNDLE}")'], 10)
+    attempt('launch-help', ['xcrun', 'simctl', 'help', 'launch'], 5)
+    crashes = []
+    for directory in [Path.home() / 'Library/Logs/DiagnosticReports', device_data / 'Library/Logs/CrashReporter']:
+        for source in sorted(directory.glob('*')):
+            if len(crashes) >= 8 or time.monotonic() >= deadline: break
+            if source.is_symlink() or not source.is_file() or not source.name.startswith(('ActivityDemo', 'SteamDownloadWidget')):
+                continue
+            if source.stat().st_mtime < since: continue
+            with source.open('rb') as stream: data = stream.read(524_288)
+            (folder / f'crash-{len(crashes)}.log').write_text(clean(data[:524_288].decode(errors='replace')))
+            size = source.stat().st_size
+            crashes.append({'file': clean(source.name), 'bytes': size, 'truncated': size > 524_288})
+    (folder / 'manifest.json').write_text(json.dumps({'commands': records, 'app_files': copied,
+        'copy_errors': copy_errors, 'crashes': crashes, 'limit_seconds': 75,
+        'evidence': 'failure diagnostics only; screenshots require pixel inspection'}, indent=2) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--upstream', type=Path, required=True)
@@ -79,6 +174,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     build = ROOT / '.build/activity-capture'
     device = None
+    started = time.time()
     environment = {'evidence': 'synthetic production component renders and actual simulator system attempts',
                    'iridium_commit': REFERENCE, 'source_sha256': SOURCES, 'architecture': platform.machine()}
     manifest = {'synthetic_data': True, 'status': 'running', 'components': [], 'system': [],
@@ -237,6 +333,11 @@ def main():
         except Exception as error:
             manifest['status'] = 'failed'
             manifest['error'] = clean(str(error))
+            if device:
+                try:
+                    failure_evidence(device, output, clean, log, started)
+                except Exception as diagnostic_error:
+                    manifest['diagnostic_error'] = clean(str(diagnostic_error))
             persist()
             raise
         finally:

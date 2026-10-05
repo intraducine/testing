@@ -5,13 +5,19 @@ import UIKit
 
 // Original procedural landscape, drawn locally. No fetched or commercial asset.
 @MainActor enum SyntheticArtwork {
-    static let image: UIImage = {
+    enum Failure: Error, Equatable { case notPrepared, gradientUnavailable, thumbnailUnavailable, jpegUnavailable, jpegTooLarge }
+    private(set) static var image: UIImage?
+    private(set) static var jpeg: Data?
+
+    static func prepare() throws {
+        let colors = [UIColor(red: 0.04, green: 0.2, blue: 0.3, alpha: 1).cgColor,
+                      UIColor(red: 0.85, green: 0.45, blue: 0.2, alpha: 1).cgColor] as CFArray
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) else {
+            throw Failure.gradientUnavailable
+        }
         let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
-        return UIGraphicsImageRenderer(size: CGSize(width: 160, height: 80), format: format).image { renderer in
+        let landscape = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 80), format: format).image { renderer in
             let context = renderer.cgContext
-            let colors = [UIColor(red: 0.04, green: 0.2, blue: 0.3, alpha: 1).cgColor,
-                          UIColor(red: 0.85, green: 0.45, blue: 0.2, alpha: 1).cgColor] as CFArray
-            let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1])!
             context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: 80), options: [])
             UIColor(red: 1, green: 0.8, blue: 0.45, alpha: 1).setFill()
             context.fillEllipse(in: CGRect(x: 110, y: 15, width: 17, height: 17))
@@ -28,12 +34,24 @@ import UIKit
                 context.setFillColor(color.cgColor); context.fillPath()
             }
         }
-    }()
-    static let jpeg: Data = {
-        let renderer = ImageRenderer(content: Image(uiImage: image).resizable().scaledToFill().frame(width: 80, height: 40).clipped())
-        renderer.scale = 1
-        return renderer.uiImage!.jpegData(compressionQuality: 0.25)!
-    }()
+        let encoded = try thumbnailJPEG(from: landscape)
+        image = landscape
+        jpeg = encoded
+    }
+
+    static func thumbnailJPEG(from image: UIImage,
+        encode: (UIImage) -> Data? = { $0.jpegData(compressionQuality: 0.25) }) throws -> Data {
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+        let thumbnail = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 40), format: format).image { _ in
+            image.draw(in: CGRect(x: 0, y: 0, width: 80, height: 40))
+        }
+        guard let pixels = thumbnail.cgImage, pixels.width == 80, pixels.height == 40 else {
+            throw Failure.thumbnailUnavailable
+        }
+        guard let encoded = encode(thumbnail), !encoded.isEmpty else { throw Failure.jpegUnavailable }
+        guard encoded.count <= 1_450 else { throw Failure.jpegTooLarge }
+        return encoded
+    }
 }
 
 private struct FixturePayload: Encodable {
@@ -61,14 +79,30 @@ private struct FixturePayload: Encodable {
                 .write(to: output.appendingPathComponent("payload-checks.json"), options: .atomic)
         }
         do {
-            try require(SyntheticArtwork.jpeg.count <= 1_450, "Synthetic JPEG exceeds production thumbnail budget")
-            report["jpegBytes"] = SyntheticArtwork.jpeg.count
+            guard let artwork = SyntheticArtwork.image, let jpeg = SyntheticArtwork.jpeg else { throw SyntheticArtwork.Failure.notPrepared }
+            try require(artwork.cgImage?.width == 160 && artwork.cgImage?.height == 80, "Synthetic landscape dimensions changed")
+            let decoded = UIImage(data: jpeg)?.cgImage
+            try require(decoded?.width == 80 && decoded?.height == 40, "Synthetic JPEG thumbnail dimensions changed")
+            try require(jpeg.count <= 1_450, "Synthetic JPEG exceeds production thumbnail budget")
+            report["jpegBytes"] = jpeg.count
+            let invalidEncodings: [(Data?, SyntheticArtwork.Failure)] = [
+                (nil, .jpegUnavailable), (Data(), .jpegUnavailable),
+                (Data(repeating: 0, count: 1_451), .jpegTooLarge)]
+            for (invalid, expected) in invalidEncodings {
+                do {
+                    _ = try SyntheticArtwork.thumbnailJPEG(from: artwork, encode: { _ in invalid })
+                    try require(false, "Invalid synthetic JPEG encoder result was accepted")
+                } catch let error as SyntheticArtwork.Failure {
+                    try require(error == expected, "Unexpected synthetic JPEG encoder failure")
+                }
+            }
+            report["artworkEncodingFailureChecksPassed"] = true
             let attributes = SteamDownloadActivityAttributes(operationId: SyntheticIdentity.operation.uuidString,
                 gameName: String(repeating: "👨‍👩‍👧‍👦", count: 80))
             report["unicodeTitleCharacters"] = attributes.gameName.count
             report["unicodeTitleUTF8Bytes"] = attributes.gameName.utf8.count
             let rates: [Double?] = [nil, 12_000_000, -1, Double.nan, Double.infinity, Double(Int64.max)]
-            let images: [Data?] = [nil, SyntheticArtwork.jpeg, Data(repeating: 255, count: 1_450),
+            let images: [Data?] = [nil, jpeg, Data(repeating: 255, count: 1_450),
                                   Data(repeating: 255, count: 1_451), Data(repeating: 0, count: 8_192)]
             var maximum = 0
             for phase in ["resolving", "downloading", "verifying", "finalizing", "waitingForeground", "paused", "failed", "completed", "cancelled"] {
@@ -107,7 +141,7 @@ private struct FixturePayload: Encodable {
             let before = activity.content
             try require(before.state.phase == "downloading" && before.state.receivedBytesPerSecond == 12_000_000,
                 "Initial rate/progress update was not accepted")
-            SteamDownloadActivity.shared.cacheArtwork(Image(uiImage: SyntheticArtwork.image), for: job.appId)
+            SteamDownloadActivity.shared.cacheArtwork(Image(uiImage: artwork), for: job.appId)
             try await Task.sleep(for: .milliseconds(300))
             let after = activity.content
             try require(after.state == before.state && after.staleDate == before.staleDate,

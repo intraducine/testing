@@ -8,6 +8,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import io
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
@@ -129,6 +130,97 @@ class HarnessTests(unittest.TestCase):
             self.assertIn('synthetic installer still waiting', log)
             self.assertIn('Timeout after 180 seconds.', log)
             self.assertNotIn('Simulator install completed', log)
+            for line in (output / 'SHA256SUMS').read_text().splitlines():
+                digest, name = line.split('  ', 1)
+                self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest, name)
+
+    def test_failure_diagnostics_preserve_partial_app_process_and_crash_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); output = root / 'output'; output.mkdir()
+            home = root / 'home'; device = 'disposable-device'
+            container = home / 'Library/Developer/CoreSimulator/Devices' / device / 'data/Containers/Data/Application/app'
+            generated = container / 'Documents/activity-captures'
+            (generated / 'components').mkdir(parents=True)
+            (generated / 'startup-progress.json').write_text('{"stage":"rendering-downloading"}')
+            (generated / 'components/partial.png').write_bytes(b'synthetic partial PNG')
+            crashes = home / 'Library/Logs/DiagnosticReports'; crashes.mkdir(parents=True)
+            (crashes / 'ActivityDemo-current.ips').write_text('synthetic watchdog termination')
+            (crashes / 'OtherApp-current.ips').write_text('must not be collected')
+            commands = []
+            def native(argv, **kwargs):
+                commands.append(argv)
+                self.assertLessEqual(kwargs['timeout'], 15)
+                text = ''
+                if argv[0] == 'ps':
+                    text = f'123 1 01:00 S 95.0 {container}/ActivityDemo.app/ActivityDemo\n999 1 01:00 S 0 OtherApp\n'
+                elif argv[0] == 'sample': text = 'synthetic main-thread rendering stack'
+                elif argv[:3] == ['xcrun', 'simctl', 'get_app_container']: text = str(container)
+                elif 'screenshot' in argv: Path(argv[-1]).write_bytes(b'synthetic failure screenshot')
+                elif argv[0] == 'log':
+                    kwargs['stdout'].write('x' * 300_000 + 'synthetic partial host log')
+                    raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+                kwargs['stdout'].write(text)
+                return subprocess.CompletedProcess(argv, 0)
+            with patch.object(capture.Path, 'home', return_value=home), patch.object(capture.subprocess, 'run', side_effect=native):
+                capture.failure_evidence(device, output, lambda text: text.replace(str(home), '<home>'), io.StringIO(), 0)
+            diagnostics = output / 'diagnostics'
+            report = json.loads((diagnostics / 'manifest.json').read_text())
+            self.assertEqual(report['app_files'], ['startup-progress.json', 'components/partial.png'])
+            self.assertEqual(len(report['crashes']), 1)
+            self.assertIn('watchdog', (diagnostics / 'crash-0.log').read_text())
+            self.assertIn('rendering stack', (diagnostics / 'app-sample.log').read_text())
+            self.assertNotIn('OtherApp', (diagnostics / 'processes.log').read_text())
+            self.assertIn('<home>', (diagnostics / 'container.log').read_text())
+            self.assertIn('partial host log', (diagnostics / 'host-log.log').read_text())
+            self.assertLessEqual((diagnostics / 'host-log.log').stat().st_size, 262_144)
+            self.assertTrue(any(r['name'] == 'host-log' and r['status'] == 'failed' and r['truncated'] for r in report['commands']))
+            self.assertFalse(any(cmd[:3] == ['xcrun', 'simctl', 'launch'] for cmd in commands))
+            self.assertFalse(list(diagnostics.glob('*.raw')))
+
+    def test_exhausted_diagnostic_deadline_starts_no_native_commands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            ticks = iter([0, *([80] * 20)])
+            with patch.object(capture.time, 'monotonic', side_effect=lambda: next(ticks)), \
+                 patch.object(capture.Path, 'home', return_value=output), patch.object(capture.subprocess, 'run') as native:
+                capture.failure_evidence('disposable-device', output, lambda text: text, io.StringIO(), 0)
+            native.assert_not_called()
+            report = json.loads((output / 'diagnostics/manifest.json').read_text())
+            self.assertTrue(report['commands'])
+            self.assertTrue(all(r['status'] == 'skipped; diagnostic deadline' for r in report['commands']))
+
+    def test_diagnostic_failure_cannot_replace_primary_launch_timeout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); output = root / 'output'
+            spec = {'patch_sha256': 'reviewed', 'patched_tree': 'reviewed-tree'}
+            (root / '.design-identity.json').write_text(json.dumps(dict(spec, verified=True)))
+            commands = []
+            def native(argv, **kwargs):
+                commands.append(argv); text = ''
+                if argv[0] == 'git': text = project.REFERENCE
+                elif argv[:4] == ['xcrun', 'simctl', 'list', '--json']:
+                    text = json.dumps({'runtimes': [{'isAvailable': True, 'identifier': 'com.apple.iOS-18-0',
+                        'version': '18.0', 'supportedDeviceTypes': [{'productFamily': 'iPhone', 'name': 'iPhone 17 Pro', 'identifier': 'iPhone17Pro'}]}]})
+                elif argv[:3] == ['xcrun', 'simctl', 'create']: text = 'disposable-device'
+                elif argv[:3] == ['xcrun', 'simctl', 'launch']:
+                    self.assertEqual(kwargs['timeout'], 60)
+                    raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+                return subprocess.CompletedProcess(argv, 0, text)
+            def diagnostic(*args):
+                self.assertFalse(any(cmd[:3] == ['xcrun', 'simctl', 'shutdown'] for cmd in commands))
+                raise RuntimeError('synthetic diagnostic failure')
+            with patch.object(sys, 'argv', ['capture.py', '--upstream', str(root), '--output', str(output)]), \
+                 patch.object(capture, 'ROOT', root), patch.object(capture.platform, 'system', return_value='Darwin'), \
+                 patch.object(capture, 'load_spec', return_value=(spec, None)), patch.object(capture, 'verify_hashes'), \
+                 patch.object(capture, 'generate', return_value=root / 'generated.xcodeproj'), \
+                 patch.object(capture.subprocess, 'run', side_effect=native), patch.object(capture, 'failure_evidence', side_effect=diagnostic):
+                with self.assertRaisesRegex(RuntimeError, 'Command timed out after 60s'):
+                    capture.main()
+            manifest = json.loads((output / 'manifest.json').read_text())
+            self.assertIn('timed out after 60s', manifest['error'])
+            self.assertEqual(manifest['diagnostic_error'], 'synthetic diagnostic failure')
+            self.assertEqual(sum(cmd[:3] == ['xcrun', 'simctl', 'launch'] for cmd in commands), 1)
+            self.assertTrue(any(cmd[:3] == ['xcrun', 'simctl', 'delete'] for cmd in commands))
             for line in (output / 'SHA256SUMS').read_text().splitlines():
                 digest, name = line.split('  ', 1)
                 self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest, name)

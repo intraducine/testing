@@ -56,12 +56,24 @@ struct SteamDownloadJob {
 }
 enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
 
+@MainActor enum CaptureProgress {
+    private static let started = ProcessInfo.processInfo.systemUptime
+    static func record(_ stage: String, to output: URL, error: String? = nil) throws {
+        var state: [String: Any] = ["stage": stage,
+            "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started]
+        if let error { state["error"] = error }
+        try JSONSerialization.data(withJSONObject: state, options: .sortedKeys)
+            .write(to: output.appendingPathComponent("startup-progress.json"), options: .atomic)
+    }
+}
+
 @MainActor final class SteamLibraryModel: ObservableObject {
     static let shared = SteamLibraryModel()
     @Published var fixture = Fixture.all[1]
     @Published var ready = false
     @Published var error: String?
     private var started = false
+    private var artworkPrepared = false
     private var job = SteamDownloadJob()
     private var events: [[String: Any]] = []
     static var output: URL {
@@ -69,15 +81,35 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
             .appendingPathComponent("activity-captures", isDirectory: true)
     }
     func restore() async { /* Production intent bridges to synthetic state only. */ }
+    func prepareArtwork() {
+        guard !artworkPrepared else { return }
+        do {
+            try FileManager.default.createDirectory(at: Self.output, withIntermediateDirectories: true)
+            try CaptureProgress.record("artwork-started", to: Self.output)
+            try SyntheticArtwork.prepare()
+            try CaptureProgress.record("artwork-prepared", to: Self.output)
+            artworkPrepared = true
+        } catch {
+            let cause = String(describing: error)
+            self.error = cause
+            do { try CaptureProgress.record("artwork-failed", to: Self.output, error: cause) }
+            catch { self.error = cause + "; startup marker failed: " + String(describing: error) }
+        }
+    }
     func prepare() async {
-        guard !started else { return }
+        guard artworkPrepared, !started else { return }
         started = true
         do {
             try FileManager.default.createDirectory(at: Self.output, withIntermediateDirectories: true)
+            try CaptureProgress.record("prepare-started", to: Self.output)
             try ComponentRenderer.save(to: Self.output)
+            try CaptureProgress.record("payload-checks", to: Self.output)
             try await PayloadChecks.run(to: Self.output)
-            SteamDownloadActivity.shared.cacheArtwork(Image(uiImage: SyntheticArtwork.image), for: 424_242)
+            try CaptureProgress.record("payload-checks-passed", to: Self.output)
+            guard let artwork = SyntheticArtwork.image else { throw SyntheticArtwork.Failure.notPrepared }
+            SteamDownloadActivity.shared.cacheArtwork(Image(uiImage: artwork), for: 424_242)
             await select(Fixture.all[1])
+            try CaptureProgress.record("ready", to: Self.output)
             ready = true
         } catch { self.error = String(describing: error) }
     }
@@ -124,7 +156,8 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
     }
 }
 
-@main struct FixtureDemoApp: App {
+@main @MainActor struct FixtureDemoApp: App {
+    init() { SteamLibraryModel.shared.prepareArtwork() }
     var body: some Scene { WindowGroup { FixtureDemoView() } }
 }
 struct FixtureDemoView: View {
@@ -167,6 +200,7 @@ struct FixtureDemoView: View {
         var records: [[String: Any]] = []
         var cards: [(Fixture, UIImage, UIImage)] = []
         for fixture in Fixture.all {
+            try CaptureProgress.record("rendering-\(fixture.id)", to: root)
             let surfaces: [(String, AnyView, CGFloat)] = [
                 ("card", AnyView(SteamDownloadCard(context: fixture.data)), 320),
                 ("expanded-bottom", AnyView(SteamDownloadCard(context: fixture.data, expandedIsland: true)), 300),
@@ -228,6 +262,7 @@ struct FixtureDemoView: View {
         }
         try JSONSerialization.data(withJSONObject: records, options: [.prettyPrinted, .sortedKeys])
             .write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
+        try CaptureProgress.record("components-saved", to: root)
     }
     private static func capture<Content: View>(_ view: Content, width: CGFloat) throws -> UIImage {
         let renderer = ImageRenderer(content: view); renderer.scale = 2; renderer.isOpaque = true
