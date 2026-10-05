@@ -63,6 +63,8 @@ artifact actions are pinned to immutable SHAs. The macos-26 job has a 25-minute
 limit and artifacts expire after three days. It uses only an already-installed
 iOS 18+ runtime and a new disposable Dynamic Island iPhone simulator, then attempts
 both shutdown and deletion. No SDK or third-party tool installation is attempted.
+Simulator installation gets one bounded 180-second attempt. Its completion time
+is recorded in commands.log; a timeout remains fatal and stops launch/UI tests.
 
 The patch step verifies its manifest and patch SHA256, all seven before/after
 source hashes, a clean exact base checkout, and the resulting full Git tree.

@@ -152,7 +152,9 @@ def main():
             run([*base, 'build-for-testing'], timeout=240)
             # Preserve usable component images before attempting system UI tests.
             app = build / 'DerivedData/Build/Products/Debug-iphonesimulator/ActivityDemo.app'
-            run(['xcrun', 'simctl', 'install', device, str(app)])
+            install_started = time.monotonic()
+            run(['xcrun', 'simctl', 'install', device, str(app)], timeout=180)
+            log.write(f'Simulator install completed in {time.monotonic() - install_started:.1f}s.\n'); log.flush()
             run(['xcrun', 'simctl', 'launch', device, BUNDLE])
             container = Path(read(['xcrun', 'simctl', 'get_app_container', device, BUNDLE, 'data']))
             generated = container / 'Documents/activity-captures'

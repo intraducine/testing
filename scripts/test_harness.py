@@ -91,6 +91,48 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'after source mismatch'):
                 apply_design.verify_hashes(root, {'files': {'source': {'after': hashlib.sha256(b'reviewed').hexdigest()}}}, 'after')
 
+    def test_install_timeout_stops_before_launch_and_retains_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); output = root / 'output'
+            spec = {'patch_sha256': 'reviewed', 'patched_tree': 'reviewed-tree'}
+            (root / '.design-identity.json').write_text(json.dumps(dict(spec, verified=True)))
+            commands = []
+            def native(argv, **kwargs):
+                commands.append(argv)
+                text = ''
+                if argv[0] == 'git': text = project.REFERENCE
+                elif argv[:4] == ['xcrun', 'simctl', 'list', '--json']:
+                    text = json.dumps({'runtimes': [{'isAvailable': True, 'identifier': 'com.apple.iOS-18-0',
+                        'version': '18.0', 'supportedDeviceTypes': [{'productFamily': 'iPhone', 'name': 'iPhone 17 Pro', 'identifier': 'iPhone17Pro'}]}]})
+                elif argv[:3] == ['xcrun', 'simctl', 'create']: text = 'disposable-device'
+                elif argv[:3] == ['xcrun', 'simctl', 'install']:
+                    self.assertEqual(kwargs['timeout'], 180)
+                    raise subprocess.TimeoutExpired(argv, kwargs['timeout'], output=b'synthetic installer still waiting')
+                return subprocess.CompletedProcess(argv, 0, text)
+            with patch.object(sys, 'argv', ['capture.py', '--upstream', str(root), '--output', str(output)]), \
+                 patch.object(capture, 'ROOT', root), patch.object(capture.platform, 'system', return_value='Darwin'), \
+                 patch.object(capture, 'load_spec', return_value=(spec, None)), \
+                 patch.object(capture, 'verify_hashes'), patch.object(capture, 'generate', return_value=root / 'generated.xcodeproj'), \
+                 patch.object(capture.subprocess, 'run', side_effect=native):
+                with self.assertRaisesRegex(RuntimeError, 'Command timed out after 180s'):
+                    capture.main()
+            self.assertEqual(sum(cmd[:3] == ['xcrun', 'simctl', 'install'] for cmd in commands), 1)
+            self.assertFalse(any(cmd[:3] == ['xcrun', 'simctl', 'launch'] for cmd in commands))
+            self.assertFalse(any('test-without-building' in cmd for cmd in commands))
+            self.assertTrue(any(cmd[:3] == ['xcrun', 'simctl', 'shutdown'] for cmd in commands))
+            self.assertTrue(any(cmd[:3] == ['xcrun', 'simctl', 'delete'] for cmd in commands))
+            manifest = json.loads((output / 'manifest.json').read_text())
+            self.assertEqual(manifest['status'], 'failed')
+            self.assertIn('timed out after 180s', manifest['error'])
+            self.assertEqual(manifest['cleanup_errors'], [])
+            log = (output / 'commands.log').read_text()
+            self.assertIn('synthetic installer still waiting', log)
+            self.assertIn('Timeout after 180 seconds.', log)
+            self.assertNotIn('Simulator install completed', log)
+            for line in (output / 'SHA256SUMS').read_text().splitlines():
+                digest, name = line.split('  ', 1)
+                self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest, name)
+
     def test_failed_ui_test_exports_partial_images_from_current_container(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); output = root / 'output'
