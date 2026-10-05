@@ -70,7 +70,8 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
 @MainActor final class SteamLibraryModel: ObservableObject {
     static let shared = SteamLibraryModel()
     @Published var fixture = Fixture.all[1]
-    @Published var ready = false
+    @Published var componentsReady = false
+    @Published var activityReady = false
     @Published var error: String?
     private var started = false
     private var artworkPrepared = false
@@ -103,18 +104,33 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
             try FileManager.default.createDirectory(at: Self.output, withIntermediateDirectories: true)
             try CaptureProgress.record("prepare-started", to: Self.output)
             try ComponentRenderer.save(to: Self.output)
+            componentsReady = true
             try CaptureProgress.record("payload-checks", to: Self.output)
             try await PayloadChecks.run(to: Self.output)
             try CaptureProgress.record("payload-checks-passed", to: Self.output)
             guard let artwork = SyntheticArtwork.image else { throw SyntheticArtwork.Failure.notPrepared }
             SteamDownloadActivity.shared.cacheArtwork(Image(uiImage: artwork), for: 424_242)
             await select(Fixture.all[1])
+            try await Task.sleep(for: .milliseconds(300))
+            guard Activity<SteamDownloadActivityAttributes>.activities.contains(where: { $0.attributes.operationId == job.id.uuidString }) else {
+                throw NSError(domain: "SyntheticCapture", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: error ?? "Initial fixture Activity registration is missing"])
+            }
             try CaptureProgress.record("ready", to: Self.output)
-            ready = true
+            activityReady = true
         } catch { self.error = String(describing: error) }
     }
     func select(_ next: Fixture) async {
         await SteamDownloadActivity.shared.recoverAfterRelaunch()
+        do { _ = try await FixtureActivityGate.waitForForeground() }
+        catch { self.error = String(describing: error); return }
+        let beforeBegin = FixtureActivityGate.observe()
+        events.append(["action": "before-begin", "fixture": next.id, "guards": beforeBegin.record,
+                       "coordinatorResetBeforeBegin": true])
+        if let reason = beforeBegin.guardExit {
+            self.error = "Production begin guard exit: \(reason)"
+            record("select-guard-exit"); return
+        }
         fixture = next
         job = .init(appId: next.hasArtwork ? 424_242 : 424_243, name: next.title, completedBytes: next.verified, totalBytes: next.total, phase: next.phase)
         SteamDownloadActivity.shared.begin(job)
@@ -179,14 +195,15 @@ struct FixtureDemoView: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3)) {
                     ForEach(Fixture.all, id: \.id) { item in
                         Button(item.id) { Task { await model.select(item) } }
-                            .buttonStyle(.bordered).accessibilityIdentifier("state.\(item.id)")
+                            .buttonStyle(.bordered).disabled(!model.activityReady).accessibilityIdentifier("state.\(item.id)")
                     }
                 }
                 Button("Cancel synthetic job") { model.cancel(SyntheticIdentity.operation) }
-                    .buttonStyle(.borderedProminent).accessibilityIdentifier("cancelFixture")
+                    .buttonStyle(.borderedProminent).disabled(!model.activityReady).accessibilityIdentifier("cancelFixture")
                 Text("The real Activity coordinator starts, updates and ends these fixtures. System stale status appears after 30 seconds. Large text here affects the app/component preview; system text size is unchanged.")
                     .font(.caption).foregroundStyle(.secondary)
-                if model.ready { Text("Components ready").accessibilityIdentifier("componentsReady") }
+                if model.componentsReady { Text("Components ready").accessibilityIdentifier("componentsReady") }
+                if model.activityReady { Text("Activity checks ready").accessibilityIdentifier("activityReady") }
                 if let error = model.error { Text(error).accessibilityIdentifier("captureError") }
             }.padding()
         }.preferredColorScheme(.dark).task { await model.prepare() }

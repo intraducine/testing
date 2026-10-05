@@ -74,6 +74,17 @@ temporary raw output and local filesystem work have no strict total time or stor
 The original synthetic landscape and 80×40 JPEG are prepared with UIKit/CoreGraphics
 in app initialization, after an artwork-started marker and before SwiftUI view evaluation.
 Rendering/encoding failures are recorded and prevent component/payload readiness.
+The demo exposes component readiness immediately after rendering and a separate
+Activity readiness flag only after the payload checks and initial registration.
+XCTest retains an app screenshot between those gates and keeps their shared
+90-second readiness budget. Fixture requests wait up to 300 foreground polls
+(100 ms apart), then record public guard observations immediately before calling
+the unchanged production coordinator. A guard exit remains a failed check.
+If production registration is missing despite observed eligibility, a separate
+synthetic ActivityKit request captures its actual error domain/code/description
+and immediate underlying error, or ends its accepted Activity immediately.
+That diagnostic attempt is explicitly distinguished from the error discarded by
+production and never satisfies production registration or artwork assertions.
 
 The patch step verifies its manifest and patch SHA256, all seven before/after
 source hashes, a clean exact base checkout, and the resulting full Git tree.

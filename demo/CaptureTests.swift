@@ -13,7 +13,13 @@ import XCTest
         executionTimeAllowance = 480
         let app = XCUIApplication()
         app.launch()
+        let readinessDeadline = ProcessInfo.processInfo.systemUptime + 90
         XCTAssertTrue(app.staticTexts["componentsReady"].waitForExistence(timeout: 90), app.debugDescription)
+        capture("startup-components-app-synthetic-controls")
+        let activityReady = app.staticTexts["activityReady"].waitForExistence(
+            timeout: max(0, readinessDeadline - ProcessInfo.processInfo.systemUptime))
+        if !activityReady { capture("startup-activity-failed-app-synthetic-controls") }
+        XCTAssertTrue(activityReady, app.debugDescription)
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         var observations: [[String: Any]] = []
         for fixture in ["preparing", "downloading", "checking", "finishing", "paused", "foreground",

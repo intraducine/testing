@@ -59,6 +59,46 @@ private struct FixturePayload: Encodable {
     let state: SteamDownloadActivityAttributes.ContentState
 }
 
+@MainActor enum FixtureActivityGate {
+    struct Observation {
+        let state: UIApplication.State
+        let enabled: Bool
+        let hosted: Bool
+        var guardExit: String? {
+            if hosted { return "hosted" }
+            if state != .active { return "applicationState != active" }
+            if !enabled { return "activities disabled" }
+            return nil
+        }
+        var record: [String: Any] {
+            let name: String
+            switch state {
+            case .active: name = "active"
+            case .inactive: name = "inactive"
+            case .background: name = "background"
+            @unknown default: name = "unknown"
+            }
+            return ["applicationState": name, "authorizationEnabled": enabled, "hosted": hosted,
+                    "guardExit": guardExit ?? "none"]
+        }
+    }
+    static func observe() -> Observation {
+        .init(state: UIApplication.shared.applicationState,
+              enabled: ActivityAuthorizationInfo().areActivitiesEnabled, hosted: LiveContainerIntegration.isHosted())
+    }
+    static func waitForForeground(attempts: Int = 300,
+        observe: () -> Observation = { FixtureActivityGate.observe() },
+        pause: () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) }) async throws -> Observation {
+        var current = observe()
+        for _ in 0..<attempts {
+            if current.state == .active || current.hosted || !current.enabled { return current }
+            try await pause()
+            current = observe()
+        }
+        return current
+    }
+}
+
 @MainActor enum PayloadChecks {
     static func bytes(_ attributes: SteamDownloadActivityAttributes,
                       _ state: SteamDownloadActivityAttributes.ContentState) throws -> Int {
@@ -79,6 +119,31 @@ private struct FixturePayload: Encodable {
                 .write(to: output.appendingPathComponent("payload-checks.json"), options: .atomic)
         }
         do {
+            report["foregroundAtPayloadStart"] = FixtureActivityGate.observe().record
+            let active = FixtureActivityGate.Observation(state: .active, enabled: true, hosted: false)
+            let inactive = FixtureActivityGate.Observation(state: .inactive, enabled: true, hosted: false)
+            let background = FixtureActivityGate.Observation(state: .background, enabled: true, hosted: false)
+            try require(active.guardExit == nil, "Active fixture guard was rejected")
+            try require(inactive.guardExit == "applicationState != active", "Inactive guard exit was hidden")
+            try require(background.guardExit == "applicationState != active", "Background guard exit was hidden")
+            try require(FixtureActivityGate.Observation(state: .active, enabled: false, hosted: false).guardExit == "activities disabled", "Disabled guard exit was hidden")
+            try require(FixtureActivityGate.Observation(state: .active, enabled: true, hosted: true).guardExit == "hosted", "Hosted guard exit was hidden")
+            var polls = 0
+            let becameActive = try await FixtureActivityGate.waitForForeground(attempts: 2,
+                observe: { return [inactive, background, active][polls] }, pause: { polls += 1 })
+            try require(becameActive.guardExit == nil && polls == 2, "Foreground transition was not awaited")
+            polls = 0
+            let timedOut = try await FixtureActivityGate.waitForForeground(attempts: 2,
+                observe: { inactive }, pause: { polls += 1 })
+            try require(timedOut.guardExit != nil && polls == 2, "Foreground timeout was counted as eligibility")
+            polls = 0
+            _ = try await FixtureActivityGate.waitForForeground(observe: { active }, pause: { polls += 1 })
+            try require(polls == 0, "Active fixture unnecessarily waited")
+            do {
+                _ = try await FixtureActivityGate.waitForForeground(observe: { inactive }, pause: { throw CancellationError() })
+                try require(false, "Foreground cancellation was discarded")
+            } catch is CancellationError { checks += 1 }
+            report["foregroundGuardChecksPassed"] = true
             guard let artwork = SyntheticArtwork.image, let jpeg = SyntheticArtwork.jpeg else { throw SyntheticArtwork.Failure.notPrepared }
             try require(artwork.cgImage?.width == 160 && artwork.cgImage?.height == 80, "Synthetic landscape dimensions changed")
             let decoded = UIImage(data: jpeg)?.cgImage
@@ -132,11 +197,23 @@ private struct FixturePayload: Encodable {
             await SteamDownloadActivity.shared.recoverAfterRelaunch()
             var job = SteamDownloadJob(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
                 appId: 424_244, name: "Synthetic late-artwork probe")
+            report["foregroundBeforeWait"] = FixtureActivityGate.observe().record
+            _ = try await FixtureActivityGate.waitForForeground()
+            let beforeBegin = FixtureActivityGate.observe()
+            report["productionBeginGuards"] = beforeBegin.record
+            report["coordinatorResetBeforeBegin"] = true
+            if let reason = beforeBegin.guardExit {
+                report["productionBeginOutcome"] = "guard exit; begin not invoked"
+                try require(false, "Production begin guard exit: \(reason)")
+            }
             SteamDownloadActivity.shared.begin(job)
+            report["productionBeginOutcome"] = "invoked after observed public guards passed"
             SteamDownloadActivity.shared.update(job, force: true, receivedBytesPerSecond: 12_000_000)
             try await Task.sleep(for: .milliseconds(300))
             guard let activity = Activity<SteamDownloadActivityAttributes>.activities.first(where: { $0.attributes.operationId == job.id.uuidString }) else {
-                try require(false, "Production Activity.request was not accepted"); return
+                report["productionBeginOutcome"] = "no matching Activity after begin; production catch does not expose its error"
+                report["separateDiagnosticRequest"] = await diagnosticRequest(job)
+                try require(false, "No matching Activity after production begin; see guard observations and separateDiagnosticRequest"); return
             }
             let before = activity.content
             try require(before.state.phase == "downloading" && before.state.receivedBytesPerSecond == 12_000_000,
@@ -171,5 +248,35 @@ private struct FixturePayload: Encodable {
             await SteamDownloadActivity.shared.recoverAfterRelaunch()
             throw error
         }
+    }
+
+    // A separate synthetic API attempt only after production registration fails.
+    // Its success never satisfies the production acceptance assertions above.
+    private static func diagnosticRequest(_ job: SteamDownloadJob) async -> [String: Any] {
+        let observation = FixtureActivityGate.observe()
+        var result: [String: Any] = ["guards": observation.record, "scope": "separate diagnostic API attempt; not the production error"]
+        if let reason = observation.guardExit {
+            result["outcome"] = "guard exit: \(reason)"; return result
+        }
+        let attributes = SteamDownloadActivityAttributes(operationId: job.id.uuidString, gameName: String(job.name.prefix(80)))
+        let state = SteamDownloadActivityAttributes.ContentState(phase: "resolving", verifiedBytes: max(0, job.completedBytes),
+            totalBytes: max(0, job.totalBytes), lastUpdated: Date(), receivedBytesPerSecond: nil, artworkJPEG: nil)
+        let content = ActivityContent(state: state.bounded(for: attributes), staleDate: Date().addingTimeInterval(30))
+        do {
+            let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
+            result["outcome"] = "accepted; ended immediately; production check still failed"
+            await activity.end(nil, dismissalPolicy: .immediate)
+        } catch {
+            let actual = error as NSError
+            result["outcome"] = "threw"
+            result["errorDomain"] = actual.domain; result["errorCode"] = actual.code
+            result["errorDescription"] = actual.localizedDescription
+            if let underlying = actual.userInfo[NSUnderlyingErrorKey] as? NSError {
+                result["underlyingErrorDomain"] = underlying.domain
+                result["underlyingErrorCode"] = underlying.code
+                result["underlyingErrorDescription"] = underlying.localizedDescription
+            }
+        }
+        return result
     }
 }
