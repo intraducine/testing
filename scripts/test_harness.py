@@ -70,6 +70,114 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(capture.attachment_labels(data), {'uuid.png':'downloading-home-compact-attempt'})
         self.assertEqual(capture.attachment_labels({'unrelated':'not a surface'}), {})
 
+    def test_system_accessibility_requires_installed_command_support(self):
+        for code, help_text in [(0, 'appearance'), (1, 'content_size accessibility-extra-large')]:
+            with self.subTest(code=code):
+                commands = []
+                def run(argv, **kwargs):
+                    commands.append(argv)
+                    return subprocess.CompletedProcess(argv, code, help_text)
+                report = {}
+                capture.capture_system_accessibility(run, 'device', ['xcodebuild'], Path('AX.xcresult'), report)
+                self.assertEqual(report['status'], 'skipped')
+                self.assertEqual(report['restoration'], 'not needed')
+                self.assertEqual(commands, [['xcrun', 'simctl', 'help', 'ui']])
+
+    def exercise_accessibility(self, *, size='large', wrong_readback=False, exit_code=0,
+                               restore_failure=False, timeout=False):
+        commands = []; report = {}; state = {'size': size, 'changed': False}
+        def run(argv, **kwargs):
+            commands.append(argv)
+            text = ''
+            if argv == ['xcrun', 'simctl', 'help', 'ui']:
+                text = 'content_size accessibility-extra-large'
+            elif argv[:5] == ['xcrun', 'simctl', 'ui', 'device', 'content_size']:
+                if len(argv) == 6:
+                    if state['changed'] and restore_failure:
+                        raise RuntimeError('Exact synthetic restoration failure')
+                    state['size'] = argv[-1]; state['changed'] = True
+                text = 'large' if wrong_readback and state['size'] == 'accessibility-extra-large' else state['size']
+            elif 'test-without-building' in argv:
+                self.assertEqual(kwargs['timeout'], 600)
+                self.assertIn('-only-testing:ActivityCaptureTests/CaptureTests/testSystemAccessibilityStates', argv)
+                if timeout:
+                    raise RuntimeError('Exact synthetic UI timeout')
+                return subprocess.CompletedProcess(argv, exit_code, 'Unmodified synthetic test output')
+            return subprocess.CompletedProcess(argv, 0, text)
+        try:
+            capture.capture_system_accessibility(run, 'device', ['xcodebuild'], Path('AX.xcresult'), report)
+        except RuntimeError as error:
+            return report, commands, str(error)
+        return report, commands, None
+
+    def test_system_accessibility_verifies_setting_and_restores_previous_category(self):
+        report, commands, error = self.exercise_accessibility(size='extra-large')
+        self.assertIsNone(error)
+        self.assertEqual(report['readback'], 'accessibility-extra-large')
+        self.assertEqual(report['restored_readback'], 'extra-large')
+        self.assertEqual(report['restoration'], 'verified')
+        self.assertEqual(report['ui_test_exit_code'], 0)
+        self.assertEqual(commands[-2][-1], 'extra-large')
+
+    def test_system_accessibility_readback_mismatch_stops_testing_and_restores(self):
+        report, commands, error = self.exercise_accessibility(wrong_readback=True)
+        self.assertEqual(error, 'Simulator system accessibility size readback mismatch')
+        self.assertEqual(report['restoration'], 'verified')
+        self.assertFalse(any('test-without-building' in argv for argv in commands))
+
+    def test_unknown_original_text_size_is_not_changed(self):
+        report, commands, error = self.exercise_accessibility(size='unexpected native output')
+        self.assertIn('Unrecognized simctl content_size readback', error)
+        self.assertEqual(report['restoration'], 'not needed')
+        self.assertFalse(any('test-without-building' in argv or len(argv) == 6 for argv in commands))
+
+    def test_system_accessibility_failure_retains_exit_code_and_restores(self):
+        report, commands, error = self.exercise_accessibility(exit_code=65)
+        self.assertEqual(error, 'System accessibility UI test exited 65; see commands.log')
+        self.assertEqual(report['ui_test_exit_code'], 65)
+        self.assertEqual(report['restoration'], 'verified')
+        self.assertEqual(sum('test-without-building' in argv for argv in commands), 1)
+
+    def test_system_accessibility_timeout_restores_without_retry(self):
+        report, commands, error = self.exercise_accessibility(timeout=True)
+        self.assertEqual(error, 'Exact synthetic UI timeout')
+        self.assertEqual(report['restoration'], 'verified')
+        self.assertEqual(sum('test-without-building' in argv for argv in commands), 1)
+
+    def test_restoration_failure_is_fatal_and_preserves_primary_test_failure(self):
+        for code in [0, 65]:
+            with self.subTest(exit_code=code):
+                report, _, error = self.exercise_accessibility(exit_code=code, restore_failure=True)
+                self.assertEqual(report['restoration'], 'failed')
+                self.assertEqual(report['restoration_error'], 'Exact synthetic restoration failure')
+                self.assertEqual(report['status'], 'failed')
+                self.assertEqual(error, 'System accessibility UI test exited 65; see commands.log'
+                                 if code else 'Exact synthetic restoration failure')
+
+    def test_partial_accessibility_export_keeps_original_pixels_and_diagnostics(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder); (output / 'preview').mkdir()
+            system = output / 'system/accessibility'
+            png = b'\x89PNG\r\n\x1a\n' + b'\x00\x00\x00\rIHDR' + struct.pack('>II', 1206, 2622)
+            name = 'system-ax-long-title-island-expanded-attempt_0_696E55DB-E3CB-45D3-A7CC-A1CF1ECE3F51.png'
+            def run(argv, **kwargs):
+                if argv[0] == 'xcrun':
+                    system.mkdir(parents=True)
+                    (system / 'original.png').write_bytes(png)
+                    (system / 'attachments.json').write_text(json.dumps([{
+                        'exportedFileName': 'original.png',
+                        'suggestedHumanReadableName': name}]))
+                    raise RuntimeError('Exact synthetic partial export failure')
+                self.assertEqual(argv[:3], ['sips', '-Z', '1100'])
+                Path(argv[-1]).write_bytes(png)
+            manifest = {'system': []}
+            errors = capture.export_system_captures(run, Path('AX.xcresult'), system, output, manifest, lambda text: text)
+            self.assertEqual(errors, ['Exact synthetic partial export failure'])
+            self.assertEqual((system / 'original.png').read_bytes(), png)
+            self.assertEqual(manifest['system'][0]['dimensions'], (1206, 2622))
+            self.assertEqual(manifest['system'][0]['requested_capture'], name)
+            self.assertTrue((output / 'preview' / (name + '.png')).is_file())
+
     def test_reviewed_manifest_and_patch_fail_closed(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

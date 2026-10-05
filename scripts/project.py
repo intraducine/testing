@@ -11,7 +11,7 @@ REFERENCE = 'f9187c8eeeda4f2b986744f4a003ec6d5643708d'
 SOURCES = {
     'iridium/apps/ios/SteamActivityShared/SteamDownloadActivityAttributes.swift': '742da7bcb787e224627295154056cdbae7cf127c6c766b6a1cc7098ec64763c4',
     'iridium/apps/ios/SteamDownloadWidget/SteamDownloadPresentation.swift': 'e547fa511158d0ff401c4ce7ed20345e6996807b702a48db074c25d5b745694e',
-    'iridium/apps/ios/SteamDownloadWidget/SteamDownloadWidget.swift': '3e54e85f31fd5e994a01ad0a934af6139600f31460c4ccfffea8b0a433961842',
+    'iridium/apps/ios/SteamDownloadWidget/SteamDownloadWidget.swift': 'ac67269b09b5fdeab2b7a53de63bbbc4622e1cdc99473eac26a6c3d4770ef84b',
     'iridium/apps/ios/Iridium/SteamDownloadActivity.swift': 'fc01ec3ee290019d9b2cb36aa5d904e57f6357bdd807637847b6072f99a37508',
 }
 BUNDLE = 'org.iridium.synthetic.activity-demo'

@@ -1,6 +1,6 @@
 {
   "base_commit": "f9187c8eeeda4f2b986744f4a003ec6d5643708d",
-  "patch_sha256": "1e95c7d2adeb212bb159dc4be20497890e1a968322bdbc9cd4adf425212e9086",
+  "patch_sha256": "c8c8fcd0a7c4ebf38d3202141047bdccefbe67d3eb5020e454d743c41d4cbc4e",
   "files": {
     "ci/test_live_activity_presentation.py": {
       "before": "0b4e8ce8d658614bd28ccb922caaadfdb59e8a4f5065d1fed6525d643e856368",
@@ -28,8 +28,8 @@
     },
     "iridium/apps/ios/SteamDownloadWidget/SteamDownloadWidget.swift": {
       "before": "74de10e92f1a416dd4af28eb32e9b9d1ea1f1a157a82336d2bd181f0f172021c",
-      "after": "3e54e85f31fd5e994a01ad0a934af6139600f31460c4ccfffea8b0a433961842"
+      "after": "ac67269b09b5fdeab2b7a53de63bbbc4622e1cdc99473eac26a6c3d4770ef84b"
     }
   },
-  "patched_tree": "e1104335107f817854997a686c011cecb04f50d1"
+  "patched_tree": "6d93d789794b9575f49bbe11a88e3eb05b0adce8"
 }

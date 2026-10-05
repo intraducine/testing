@@ -47,8 +47,17 @@ The coordinator uses its production 80-character title limit and 30-second stale
 deadline. The stale capture waits 35 seconds without updates. Terminal activities
 can disappear from Dynamic Island while remaining on the Lock Screen-style surface
 for the production 60-second dismissal period. Those absences are relevant results,
-not replaced with component mockups. App/component large text uses accessibility3;
-system Dynamic Type is unchanged. Minimal Island placement is a component diagnostic,
+not replaced with component mockups. App/component large text uses accessibility3.
+A separate native pass uses the simulator's actual accessibility-extra-large
+system text size for downloading (speed, bytes and Cancel), foreground handoff,
+long-title, large-text and failed (long status) fixtures. It checks the installed
+`simctl help ui` interface before changing the disposable simulator, verifies
+setting readback, and asserts UIKit's actual preferred content size in every
+fixture. Unsupported command support is an explicit skip. Supported-command,
+readback, native test or restoration failures remain fatal. The previous system
+category is restored and verified even after testing fails. Original screenshots
+and separate accessibility observations/records are retained; inspect the rounded
+system margins before claiming that the content fits. Minimal Island placement is a component diagnostic,
 not a multi-app system test. StandBy, iPad, Watch and physical devices are untested.
 
 Apple describes these system-selected presentations in its
@@ -88,6 +97,15 @@ production and never satisfies production registration or artwork assertions.
 Each artwork fixture offers the original image to the production cache after
 foreground eligibility is observed. Preparing-state system attempts are also
 included in the small preview artifact when a later UI assertion fails.
+The approved expanded-card spacing fixture reduces only its vertical padding and
+row spacing and adds four points of trailing percent padding. Lock-style card
+spacing, font sizes, content and the 44-point Cancel target are preserved. Its
+native fit remains a validation question until the new system images are inspected.
+Both native passes use the existing 480-second XCTest allowance and 600-second
+command limit; the job remains
+bounded to 25 minutes. Normal-pass payload assertions are also applied to the
+system accessibility downloading fixture. Both result bundles are exported on
+failure, and accessibility records live under `system/accessibility/`.
 
 The patch step verifies its manifest and patch SHA256, all seven before/after
 source hashes, a clean exact base checkout, and the resulting full Git tree.
@@ -103,6 +121,8 @@ python3 -B scripts/capture.py --upstream /path/to/exact/iridium --output .artifa
 
 Local Python tests validate pins, target boundaries, Info plists, scheme, PNG checks,
 attachment naming, post-test container recovery, failed-run checksums and the Linux guard.
+They also verify support skips, system text-size readback, restoration after failure,
+primary diagnostic preservation, and retention of partial accessibility exports.
 They do not establish Swift compilation or
 ActivityKit availability. Native build, UI interaction and screenshot export happen
 in the reviewed Actions run. A failed native command remains a failed job; partial

@@ -62,6 +62,90 @@ def collect_app_records(read, device, output):
     return missing
 
 
+def capture_system_accessibility(run, device, base, results, report):
+    """Use the installed simctl interface, verify its value, then restore it."""
+    target = 'accessibility-extra-large'
+    report.update(target=target, status='checking support', restoration='not needed')
+    help_result = run(['xcrun', 'simctl', 'help', 'ui'], timeout=15, check=False)
+    if help_result.returncode or 'content_size' not in help_result.stdout or target not in help_result.stdout:
+        report.update(status='skipped', reason='Installed simctl help does not advertise content_size accessibility-extra-large',
+                      help_exit_code=help_result.returncode)
+        return
+    categories = {'extra-small', 'small', 'medium', 'large', 'extra-large', 'extra-extra-large',
+                  'extra-extra-extra-large', 'accessibility-medium', 'accessibility-large', target,
+                  'accessibility-extra-extra-large', 'accessibility-extra-extra-extra-large'}
+    command = ['xcrun', 'simctl', 'ui', device, 'content_size']
+    previous = run(command, timeout=15).stdout.strip()
+    report['previous'] = previous
+    if previous not in categories:
+        report['status'] = 'failed'
+        raise RuntimeError('Unrecognized simctl content_size readback; system setting was not changed')
+    primary_error = None
+    try:
+        report['restoration'] = 'required'
+        run([*command, target], timeout=15)
+        report['readback'] = run(command, timeout=15).stdout.strip()
+        if report['readback'] != target:
+            raise RuntimeError('Simulator system accessibility size readback mismatch')
+        result = run([*base, '-resultBundlePath', str(results), '-parallel-testing-enabled', 'NO',
+                      '-only-testing:ActivityCaptureTests/CaptureTests/testSystemAccessibilityStates',
+                      'test-without-building'], timeout=600, check=False)
+        report['ui_test_exit_code'] = result.returncode
+        if result.returncode:
+            raise RuntimeError(f'System accessibility UI test exited {result.returncode}; see commands.log')
+        report['status'] = 'passed; inspect system screenshots for fit'
+    except Exception as error:
+        primary_error = error
+        report.update(status='failed', error=str(error))
+        raise
+    finally:
+        try:
+            run([*command, previous], timeout=15)
+            report['restored_readback'] = run(command, timeout=15).stdout.strip()
+            if report['restored_readback'] != previous:
+                raise RuntimeError('Simulator system text size restoration readback mismatch')
+            report['restoration'] = 'verified'
+        except Exception as error:
+            report.update(restoration='failed', restoration_error=str(error))
+            if primary_error is None:
+                report['status'] = 'failed'
+                raise
+
+
+def export_system_captures(run, results, system, output, manifest, clean):
+    """Retain original screenshots even when XCTest returns a failure."""
+    errors = []
+    try:
+        run(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(results), '--output-path', str(system)])
+    except Exception as error:
+        errors.append(clean(str(error)))
+    labels = {}
+    for file in system.rglob('*.json'):
+        try:
+            labels.update(attachment_labels(json.loads(file.read_text())))
+        except Exception as error:
+            errors.append(f'{file.name}: {clean(str(error))}')
+    for file in sorted(system.rglob('*.png')):
+        name = labels.get(file.name, file.name)
+        try:
+            dimensions = png_dimensions(file)
+        except Exception as error:
+            errors.append(f'{file.name}: {clean(str(error))}')
+            continue
+        manifest['system'].append({'file': str(file.relative_to(output)), 'requested_capture': name,
+            'evidence': 'actual simulator screenshot; requested surface, not proof of visible Activity',
+            'dimensions': dimensions})
+        system_surface = re.search(r'-(?:island-expanded-attempt|notification-center-lock-style-attempt)(?:_|\.|$)', name)
+        if any(tag in name for tag in ['preparing-', 'downloading-', 'completed-notification', 'failed-app', 'cancelled-app']) or (
+                system_surface and any(tag in name for tag in ['failed-', 'foreground-', 'long-title-', 'large-text-'])):
+            slug = re.sub(r'[^a-zA-Z0-9._-]', '-', name)[:100]
+            try:
+                run(['sips', '-Z', '1100', str(file), '--out', str(output / 'preview' / (slug + '.png'))])
+            except Exception as error:
+                errors.append(clean(str(error)))
+    return errors
+
+
 def write_checksums(output):
     files = sorted(p for p in output.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
     (output / 'SHA256SUMS').write_text(''.join(
@@ -181,7 +265,7 @@ def main():
                 'limitations': ['Notification Center is not a locked-device authentication test.',
                     'Home/expanded screenshots are requested surfaces; inspect pixels to confirm presentation.',
                     'Terminal states may disappear from Dynamic Island under the real production end policy.',
-                    'Large-text override is app/component-only; system Dynamic Type remains unchanged.',
+                    'Normal-pass large-text override is app/component-only; the separate system accessibility pass is support-gated.',
                     'Long-title system request uses the production 80-character title limit.',
                     'No Steam engine, login, network download, physical device or private signing credentials.']}
     def persist():
@@ -276,6 +360,7 @@ def main():
             test_error = None
             try:
                 result = run([*base, '-resultBundlePath', str(results), '-parallel-testing-enabled', 'NO',
+                              '-only-testing:ActivityCaptureTests/CaptureTests/testSyntheticStates',
                               'test-without-building'], timeout=600, check=False)
                 manifest['ui_test_exit_code'] = result.returncode
                 if result.returncode:
@@ -284,38 +369,12 @@ def main():
                 test_error = clean(str(error))
             manifest['ui_test_error'] = test_error
             system = output / 'system'
-            export_errors = []
-            try:
-                run(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(results), '--output-path', str(system)])
-            except Exception as error:
-                export_errors.append(clean(str(error)))
+            export_errors = export_system_captures(run, results, system, output, manifest, clean)
             try:
                 manifest['missing_app_records'] = collect_app_records(read, device, output)
             except Exception as error:
                 manifest['missing_app_records'] = ['app-events.json', 'payload-checks.json']
                 export_errors.append(clean(str(error)))
-            labels = {}
-            for file in system.rglob('*.json'):
-                try:
-                    labels.update(attachment_labels(json.loads(file.read_text())))
-                except Exception as error:
-                    export_errors.append(f'{file.name}: {clean(str(error))}')
-            for file in sorted(system.rglob('*.png')):
-                name = labels.get(file.name, file.name)
-                try:
-                    dimensions = png_dimensions(file)
-                except Exception as error:
-                    export_errors.append(f'{file.name}: {clean(str(error))}')
-                    continue
-                manifest['system'].append({'file':str(file.relative_to(output)), 'requested_capture':name,
-                    'evidence':'actual simulator screenshot; requested surface, not proof of visible Activity',
-                    'dimensions':dimensions})
-                if any(tag in name for tag in ['preparing-', 'downloading-', 'completed-notification', 'failed-app', 'cancelled-app']):
-                    slug = re.sub(r'[^a-zA-Z0-9._-]', '-', name)[:100]
-                    try:
-                        run(['sips', '-Z', '1100', str(file), '--out', str(output / 'preview' / (slug + '.png'))])
-                    except Exception as error:
-                        export_errors.append(clean(str(error)))
             manifest['export_errors'] = export_errors
             if test_error:
                 raise RuntimeError(test_error)
@@ -326,6 +385,35 @@ def main():
                 raise RuntimeError(f'Native payload checks failed: {payload.get("error", "missing passed status")}')
             if not manifest['system']:
                 raise RuntimeError('Native UI tests exported no system screenshots')
+            accessibility = manifest['system_accessibility'] = {}
+            ax_results = build / 'AccessibilityCapture.xcresult'
+            ax_error = None
+            try:
+                capture_system_accessibility(run, device, base, ax_results, accessibility)
+            except Exception as error:
+                ax_error = clean(str(error))
+            if accessibility.get('restoration') in ['verified', 'failed']:
+                ax_system = system / 'accessibility'
+                before = len(manifest['system'])
+                accessibility['export_errors'] = export_system_captures(run, ax_results, ax_system, output, manifest, clean)
+                ax_system.mkdir(parents=True, exist_ok=True)
+                try:
+                    accessibility['missing_app_records'] = collect_app_records(read, device, ax_system)
+                except Exception as error:
+                    accessibility['missing_app_records'] = ['app-events.json', 'payload-checks.json']
+                    accessibility['export_errors'].append(clean(str(error)))
+                accessibility['screenshot_count'] = len(manifest['system']) - before
+                if ax_error:
+                    raise RuntimeError(ax_error)
+                if accessibility['export_errors'] or accessibility['missing_app_records']:
+                    raise RuntimeError('System accessibility capture export incomplete; see manifest.json')
+                if not accessibility['screenshot_count']:
+                    raise RuntimeError('System accessibility UI test exported no screenshots')
+                ax_payload = json.loads((ax_system / 'payload-checks.json').read_text())
+                if ax_payload.get('status') != 'passed':
+                    raise RuntimeError(f'System accessibility payload checks failed: {ax_payload.get("error", "missing passed status")}')
+            elif ax_error:
+                raise RuntimeError(ax_error)
             if sum(p.stat().st_size for p in (output / 'preview').iterdir()) > 20 * 1024 * 1024:
                 raise RuntimeError('Preview PNGs exceed the 20 MiB retrieval budget')
             manifest['status'] = 'completed; system visibility requires pixel inspection'

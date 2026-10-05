@@ -160,7 +160,8 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
             "encodedPayloadBytes": selected.flatMap { try? PayloadChecks.bytes($0.attributes, $0.content.state) } ?? 0,
             "count": Activity<SteamDownloadActivityAttributes>.activities.count,
             "states": Activity<SteamDownloadActivityAttributes>.activities.map { String(describing: $0.activityState) },
-            "fixture": fixture.id, "phase": fixture.phase]
+            "fixture": fixture.id, "phase": fixture.phase,
+            "systemContentSizeCategory": UIApplication.shared.preferredContentSizeCategory.rawValue]
         return String(data: try! JSONSerialization.data(withJSONObject: values, options: .sortedKeys), encoding: .utf8)!
     }
     private func record(_ action: String) {

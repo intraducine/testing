@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_SHA256 = 'f165c3a72e1d5b71bbae49dd8f5c5b456b41e92a951f181090210a00f4afb50a'
+MANIFEST_SHA256 = '5c6eb97e8179cdf2b0f2b017ebcee26a504ceb2384c117fb790e32dd382f0f77'
 
 
 def load_spec(root=ROOT):
