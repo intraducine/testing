@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate only the simulator app, unchanged widget, and native UI-test targets."""
+"""Generate only the simulator app, reviewed widget, and native UI-test targets."""
 # SPDX-License-Identifier: AGPL-3.0-only
 import hashlib
 import json
@@ -9,10 +9,10 @@ import xml.etree.ElementTree as ET
 
 REFERENCE = 'f9187c8eeeda4f2b986744f4a003ec6d5643708d'
 SOURCES = {
-    'iridium/apps/ios/SteamActivityShared/SteamDownloadActivityAttributes.swift': '498c518bbbfcbbafc77b4e8ea811ebd27bc39be7a84f38744d5d1f096dd5285d',
-    'iridium/apps/ios/SteamDownloadWidget/SteamDownloadPresentation.swift': '8d658fbe1e9e89f2028094071b3aca12f716bdd3b6694c52bcc1ae85e99558cc',
-    'iridium/apps/ios/SteamDownloadWidget/SteamDownloadWidget.swift': '74de10e92f1a416dd4af28eb32e9b9d1ea1f1a157a82336d2bd181f0f172021c',
-    'iridium/apps/ios/Iridium/SteamDownloadActivity.swift': '2eeb77bf38c571dcf320664a6eb6271b8a38d31c15235f23c64aee4d4d509068',
+    'iridium/apps/ios/SteamActivityShared/SteamDownloadActivityAttributes.swift': '742da7bcb787e224627295154056cdbae7cf127c6c766b6a1cc7098ec64763c4',
+    'iridium/apps/ios/SteamDownloadWidget/SteamDownloadPresentation.swift': 'e547fa511158d0ff401c4ce7ed20345e6996807b702a48db074c25d5b745694e',
+    'iridium/apps/ios/SteamDownloadWidget/SteamDownloadWidget.swift': '3e54e85f31fd5e994a01ad0a934af6139600f31460c4ccfffea8b0a433961842',
+    'iridium/apps/ios/Iridium/SteamDownloadActivity.swift': 'fc01ec3ee290019d9b2cb36aa5d904e57f6357bdd807637847b6072f99a37508',
 }
 BUNDLE = 'org.iridium.synthetic.activity-demo'
 
@@ -55,7 +55,7 @@ def generate(root, upstream, destination):
             path=f'{name}.{extension}', sourceTree='BUILT_PRODUCTS_DIR')
         targets[name] = hashlib.sha256(('target/' + name).encode()).hexdigest()[:24].upper()
     files = {}
-    sources = [root / 'demo/FixtureDemo.swift', root / 'demo/CaptureTests.swift', *(upstream / name for name in SOURCES)]
+    sources = [root / 'demo/FixtureDemo.swift', root / 'demo/CaptureTests.swift', root / 'demo/PayloadChecks.swift', *(upstream / name for name in SOURCES)]
     for path in sources:
         files[path.name] = add('file/' + path.name, isa='PBXFileReference', lastKnownFileType='sourcecode.swift',
                               path=str(path), sourceTree='<absolute>')
@@ -76,7 +76,7 @@ def generate(root, upstream, destination):
     for name, extension, product_type in [('ActivityDemo', 'app', 'application'),
                                           ('SteamDownloadWidget', 'appex', 'app-extension'),
                                           ('ActivityCaptureTests', 'xctest', 'bundle.ui-testing')]:
-        source_names = {'ActivityDemo': ['FixtureDemo.swift', *shared, 'SteamDownloadActivity.swift'],
+        source_names = {'ActivityDemo': ['FixtureDemo.swift', 'PayloadChecks.swift', *shared, 'SteamDownloadActivity.swift'],
                         'SteamDownloadWidget': shared, 'ActivityCaptureTests': ['CaptureTests.swift']}[name]
         build_files = [add(f'build/{name}/{file}', isa='PBXBuildFile', fileRef=files[file]) for file in source_names]
         phases = [add('sources/' + name, isa='PBXSourcesBuildPhase', buildActionMask='2147483647',

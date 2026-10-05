@@ -7,7 +7,7 @@ import UIKit
 enum SyntheticIdentity {
     static let operation = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 }
-struct Fixture {
+@MainActor struct Fixture {
     let id: String
     let phase: String
     var title = "Synthetic Expedition"
@@ -15,6 +15,8 @@ struct Fixture {
     var total: Int64 = 100_000_000
     var stale = false
     var type: DynamicTypeSize = .large
+    var rate: Double? = 12_000_000
+    var hasArtwork = true
     static let longTitle = "Synthetic Expedition: A Very Long Game Title — 日本語 and Unicode for Layout Checks"
     static let all: [Fixture] = [
         .init(id: "preparing", phase: "resolving", verified: 0, total: 0),
@@ -28,18 +30,24 @@ struct Fixture {
         .init(id: "completed", phase: "completed", verified: 100_000_000),
         .init(id: "long-title", phase: "downloading", title: longTitle),
         .init(id: "large-text", phase: "waitingForeground", title: longTitle, type: .accessibility3),
+        .init(id: "no-art", phase: "downloading", hasArtwork: false),
+        .init(id: "no-rate", phase: "downloading", rate: nil),
     ]
     var data: SteamDownloadViewData {
-        .init(attributes: .init(operationId: SyntheticIdentity.operation.uuidString, gameName: title),
-              state: .init(phase: phase, verifiedBytes: verified, totalBytes: total,
-                           lastUpdated: Date(timeIntervalSince1970: 1_700_000_000)), isStale: stale)
+        let attributes = SteamDownloadActivityAttributes(operationId: SyntheticIdentity.operation.uuidString,
+            gameName: String(title.prefix(80)))
+        let state = SteamDownloadActivityAttributes.ContentState(phase: phase, verifiedBytes: verified, totalBytes: total,
+            lastUpdated: Date(timeIntervalSince1970: 1_700_000_000), receivedBytesPerSecond: rate,
+            artworkJPEG: hasArtwork ? SyntheticArtwork.jpeg : nil).bounded(for: attributes)
+        return .init(attributes: attributes, state: state, isStale: stale)
     }
 }
 
-// Only the fields consumed by the unchanged production Activity coordinator.
+// Only the fields consumed by the reviewed production Activity coordinator.
 enum FixtureStatus: String { case downloading, completed, failed, cancelled }
 struct SteamDownloadJob {
     var id = SyntheticIdentity.operation
+    var appId: UInt32 = 424_242
     var name = "Synthetic Expedition"
     var completedBytes: Int64 = 25_000_000
     var totalBytes: Int64 = 100_000_000
@@ -67,16 +75,18 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
         do {
             try FileManager.default.createDirectory(at: Self.output, withIntermediateDirectories: true)
             try ComponentRenderer.save(to: Self.output)
-            ready = true
+            try await PayloadChecks.run(to: Self.output)
+            SteamDownloadActivity.shared.cacheArtwork(Image(uiImage: SyntheticArtwork.image), for: 424_242)
             await select(Fixture.all[1])
+            ready = true
         } catch { self.error = String(describing: error) }
     }
     func select(_ next: Fixture) async {
         await SteamDownloadActivity.shared.recoverAfterRelaunch()
         fixture = next
-        job = .init(name: next.title, completedBytes: next.verified, totalBytes: next.total, phase: next.phase)
+        job = .init(appId: next.hasArtwork ? 424_242 : 424_243, name: next.title, completedBytes: next.verified, totalBytes: next.total, phase: next.phase)
         SteamDownloadActivity.shared.begin(job)
-        SteamDownloadActivity.shared.update(job, phase: next.phase, force: true)
+        SteamDownloadActivity.shared.update(job, phase: next.phase, force: true, receivedBytesPerSecond: next.rate)
         if let terminal = FixtureStatus(rawValue: next.phase), terminal != .downloading {
             job.status = terminal
             SteamDownloadActivity.shared.end(job)
@@ -92,7 +102,11 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
         record("cancel")
     }
     var status: String {
+        let activities = Activity<SteamDownloadActivityAttributes>.activities
+        let selected = activities.first { $0.attributes.operationId == job.id.uuidString }
         let values: [String: Any] = ["enabled": ActivityAuthorizationInfo().areActivitiesEnabled,
+            "requestAccepted": selected != nil, "hasArtwork": selected?.content.state.artworkJPEG != nil,
+            "encodedPayloadBytes": selected.flatMap { try? PayloadChecks.bytes($0.attributes, $0.content.state) } ?? 0,
             "count": Activity<SteamDownloadActivityAttributes>.activities.count,
             "states": Activity<SteamDownloadActivityAttributes>.activities.map { String(describing: $0.activityState) },
             "fixture": fixture.id, "phase": fixture.phase]
@@ -183,6 +197,9 @@ struct FixtureDemoView: View {
                         "surface": variant, "evidence": "production SwiftUI component render; not a system container",
                         "isStale": fixture.stale, "dynamicType": String(describing: fixture.type),
                         "widthPixels": pixels.width, "heightPixels": pixels.height,
+                        "encodedPayloadBytes": try PayloadChecks.bytes(fixture.data.attributes, fixture.data.state),
+                        "artworkBytes": fixture.data.state.artworkJPEG?.count ?? 0,
+                        "visibleReceivedRate": fixture.data.presentation.receivedRateSummary ?? "unavailable",
                         "naturalHeightPoints": image.size.height, "exceeds160PointProbe": image.size.height > 160])
                 }
             }

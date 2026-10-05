@@ -2,7 +2,7 @@ name: Synthetic Iridium Live Activity captures
 on:
   push:
     branches: [activity-capture-f9187c8]
-    paths: ['.github/workflows/capture.yml', 'demo/**', 'scripts/**']
+    paths: ['.github/workflows/capture.yml', 'demo/**', 'scripts/**', 'fixtures/**']
 permissions:
   contents: read
 concurrency:
@@ -29,8 +29,13 @@ jobs:
             /iridium/apps/ios/SteamActivityShared/
             /iridium/apps/ios/SteamDownloadWidget/
             /iridium/apps/ios/Iridium/SteamDownloadActivity.swift
+            /iridium/apps/ios/Iridium/SteamLibraryModel.swift
+            /iridium/apps/ios/Iridium/Views/SteamLibraryView.swift
+            /ci/test_live_activity_presentation.py
       - name: Validate the capture harness
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py'
+      - name: Verify and apply the reviewed design source
+        run: python3 -B scripts/apply_design.py --upstream upstream
       - name: Build and capture synthetic states
         run: python3 -B scripts/capture.py --upstream upstream --output .artifacts
       - name: Retain small previews and capture manifest
@@ -42,6 +47,9 @@ jobs:
             .artifacts/preview/
             .artifacts/manifest.json
             .artifacts/environment.json
+            .artifacts/design-identity.json
+            .artifacts/payload-checks.json
+            .artifacts/components/manifest.json
             .artifacts/commands.log
             .artifacts/SHA256SUMS
           if-no-files-found: warn
@@ -55,6 +63,8 @@ jobs:
             .artifacts/components/
             .artifacts/system/
             .artifacts/app-events.json
+            .artifacts/payload-checks.json
+            .artifacts/design-identity.json
             .artifacts/manifest.json
             .artifacts/SHA256SUMS
           if-no-files-found: warn

@@ -1,0 +1,35 @@
+{
+  "base_commit": "f9187c8eeeda4f2b986744f4a003ec6d5643708d",
+  "patch_sha256": "1e95c7d2adeb212bb159dc4be20497890e1a968322bdbc9cd4adf425212e9086",
+  "files": {
+    "ci/test_live_activity_presentation.py": {
+      "before": "0b4e8ce8d658614bd28ccb922caaadfdb59e8a4f5065d1fed6525d643e856368",
+      "after": "2e0ad2011664c84ad16b87062bf47d451c43d668b8fb7a078f7ef81eadcf79b1"
+    },
+    "iridium/apps/ios/Iridium/SteamDownloadActivity.swift": {
+      "before": "2eeb77bf38c571dcf320664a6eb6271b8a38d31c15235f23c64aee4d4d509068",
+      "after": "fc01ec3ee290019d9b2cb36aa5d904e57f6357bdd807637847b6072f99a37508"
+    },
+    "iridium/apps/ios/Iridium/SteamLibraryModel.swift": {
+      "before": "9d93c511bdc1570b31217cc4e6a06794f03b66b11b49ac598c061e78a7fbac6d",
+      "after": "ab1b806aa05ec689205dc009e0376ccd237edc671b9fb26a41012302cf0fb5cc"
+    },
+    "iridium/apps/ios/Iridium/Views/SteamLibraryView.swift": {
+      "before": "9ef76aa6b6c844de3772fe8cd2c499ac878d050089f33df44c1ca0bb1823f861",
+      "after": "0bdccc1ccdf219e8084c971ea5c4fac117c339276e01d6cdaa62c900d4d81356"
+    },
+    "iridium/apps/ios/SteamActivityShared/SteamDownloadActivityAttributes.swift": {
+      "before": "498c518bbbfcbbafc77b4e8ea811ebd27bc39be7a84f38744d5d1f096dd5285d",
+      "after": "742da7bcb787e224627295154056cdbae7cf127c6c766b6a1cc7098ec64763c4"
+    },
+    "iridium/apps/ios/SteamDownloadWidget/SteamDownloadPresentation.swift": {
+      "before": "8d658fbe1e9e89f2028094071b3aca12f716bdd3b6694c52bcc1ae85e99558cc",
+      "after": "e547fa511158d0ff401c4ce7ed20345e6996807b702a48db074c25d5b745694e"
+    },
+    "iridium/apps/ios/SteamDownloadWidget/SteamDownloadWidget.swift": {
+      "before": "74de10e92f1a416dd4af28eb32e9b9d1ea1f1a157a82336d2bd181f0f172021c",
+      "after": "3e54e85f31fd5e994a01ad0a934af6139600f31460c4ccfffea8b0a433961842"
+    }
+  },
+  "patched_tree": "e1104335107f817854997a686c011cecb04f50d1"
+}

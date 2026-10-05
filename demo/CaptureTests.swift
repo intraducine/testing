@@ -2,8 +2,8 @@
 import XCTest
 
 @MainActor final class CaptureTests: XCTestCase {
-    private func capture(_ name: String, screen: XCUIScreen = .main) {
-        let attachment = XCTAttachment(screenshot: screen.screenshot())
+    private func capture(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -31,6 +31,14 @@ import XCTest
             app.swipeDown()
             capture("\(fixture)-app-synthetic-controls")
             let status = app.staticTexts["activityStatus"].value as? String ?? "unavailable"
+            if fixture == "downloading" {
+                let data = try XCTUnwrap(status.data(using: .utf8))
+                let actual = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                XCTAssertEqual(actual["requestAccepted"] as? Bool, true, status)
+                XCTAssertEqual(actual["hasArtwork"] as? Bool, true, status)
+                let count = try XCTUnwrap(actual["encodedPayloadBytes"] as? Int)
+                XCTAssertTrue(count > 0 && count <= 3_072, status)
+            }
             XCUIDevice.shared.press(.home)
             sleep(fixture == "stale" ? 35 : 3)
             capture("\(fixture)-home-compact-attempt")

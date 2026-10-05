@@ -14,6 +14,7 @@ import sys
 import time
 
 from project import BUNDLE, REFERENCE, SOURCES, generate
+from apply_design import load_spec, verify_hashes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,6 +46,26 @@ def attachment_labels(value):
                 visit(child)
     visit(value)
     return result
+
+
+def collect_app_records(read, device, output):
+    # XCTest may reinstall the app. Resolve its current container after testing.
+    container = Path(read(['xcrun', 'simctl', 'get_app_container', device, BUNDLE, 'data']))
+    generated = container / 'Documents/activity-captures'
+    missing = []
+    for name in ['app-events.json', 'payload-checks.json']:
+        source = generated / name
+        if source.is_file():
+            shutil.copy2(source, output / name)
+        else:
+            missing.append(name)
+    return missing
+
+
+def write_checksums(output):
+    files = sorted(p for p in output.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
+    (output / 'SHA256SUMS').write_text(''.join(
+        f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(output)}\n' for p in files))
 
 
 def main():
@@ -95,6 +116,13 @@ def main():
         try:
             if read(['git', '-C', str(upstream), 'rev-parse', 'HEAD']) != REFERENCE:
                 raise RuntimeError('Upstream checkout is not the pinned production commit')
+            spec, _ = load_spec()
+            verify_hashes(upstream, spec, 'after')
+            identity = json.loads((ROOT / '.design-identity.json').read_text())
+            if identity != dict(spec, verified=True):
+                raise RuntimeError('Reviewed design application receipt mismatch')
+            (output / 'design-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
+            environment.update(design_patch_sha256=spec['patch_sha256'], iridium_tree=spec['patched_tree'])
             environment.update(testing_commit=read(['git', 'rev-parse', 'HEAD']),
                                xcode=read(['xcodebuild', '-version']), swift=read(['xcrun', 'swiftc', '--version']),
                                macos=read(['sw_vers', '-productVersion']),
@@ -135,15 +163,9 @@ def main():
                 time.sleep(1)
             for name in ['components', 'preview']:
                 shutil.copytree(generated / name, output / name)
-            results = build / 'Capture.xcresult'
-            run([*base, '-resultBundlePath', str(results), '-parallel-testing-enabled', 'NO',
-                 'test-without-building'], timeout=600)
-            system = output / 'system'
-            run(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(results), '--output-path', str(system)])
-            shutil.copy2(generated / 'app-events.json', output / 'app-events.json')
             components = json.loads((output / 'components/manifest.json').read_text())
-            if len(components) != 66 or len({r['file'] for r in components}) != 66:
-                raise RuntimeError('Expected 66 distinct production component PNGs')
+            if len(components) != 78 or len({r['file'] for r in components}) != 78:
+                raise RuntimeError('Expected 78 distinct production component PNGs')
             for record in components:
                 name = record['file']
                 if Path(name).name != name:
@@ -151,19 +173,63 @@ def main():
                 if png_dimensions(output / 'components' / name) != (record['widthPixels'], record['heightPixels']):
                     raise RuntimeError('Component PNG dimensions do not match manifest')
             manifest['components'] = components
+            persist()
+            results = build / 'Capture.xcresult'
+            test_error = None
+            try:
+                result = run([*base, '-resultBundlePath', str(results), '-parallel-testing-enabled', 'NO',
+                              'test-without-building'], timeout=600, check=False)
+                manifest['ui_test_exit_code'] = result.returncode
+                if result.returncode:
+                    test_error = f'Native UI test exited {result.returncode}; see commands.log'
+            except Exception as error:
+                test_error = clean(str(error))
+            manifest['ui_test_error'] = test_error
+            system = output / 'system'
+            export_errors = []
+            try:
+                run(['xcrun', 'xcresulttool', 'export', 'attachments', '--path', str(results), '--output-path', str(system)])
+            except Exception as error:
+                export_errors.append(clean(str(error)))
+            try:
+                manifest['missing_app_records'] = collect_app_records(read, device, output)
+            except Exception as error:
+                manifest['missing_app_records'] = ['app-events.json', 'payload-checks.json']
+                export_errors.append(clean(str(error)))
             labels = {}
             for file in system.rglob('*.json'):
-                labels.update(attachment_labels(json.loads(file.read_text())))
+                try:
+                    labels.update(attachment_labels(json.loads(file.read_text())))
+                except Exception as error:
+                    export_errors.append(f'{file.name}: {clean(str(error))}')
             for file in sorted(system.rglob('*.png')):
                 name = labels.get(file.name, file.name)
+                try:
+                    dimensions = png_dimensions(file)
+                except Exception as error:
+                    export_errors.append(f'{file.name}: {clean(str(error))}')
+                    continue
                 manifest['system'].append({'file':str(file.relative_to(output)), 'requested_capture':name,
                     'evidence':'actual simulator screenshot; requested surface, not proof of visible Activity',
-                    'dimensions':png_dimensions(file)})
+                    'dimensions':dimensions})
                 if any(tag in name for tag in ['downloading-', 'completed-notification', 'failed-app', 'cancelled-app']):
                     slug = re.sub(r'[^a-zA-Z0-9._-]', '-', name)[:100]
-                    run(['sips', '-Z', '1100', str(file), '--out', str(output / 'preview' / (slug + '.png'))])
+                    try:
+                        run(['sips', '-Z', '1100', str(file), '--out', str(output / 'preview' / (slug + '.png'))])
+                    except Exception as error:
+                        export_errors.append(clean(str(error)))
+            manifest['export_errors'] = export_errors
+            if test_error:
+                raise RuntimeError(test_error)
+            if export_errors or manifest['missing_app_records']:
+                raise RuntimeError('Capture export incomplete; see export_errors and missing_app_records in manifest.json')
+            payload = json.loads((output / 'payload-checks.json').read_text())
+            if payload.get('status') != 'passed':
+                raise RuntimeError(f'Native payload checks failed: {payload.get("error", "missing passed status")}')
             if not manifest['system']:
                 raise RuntimeError('Native UI tests exported no system screenshots')
+            if sum(p.stat().st_size for p in (output / 'preview').iterdir()) > 20 * 1024 * 1024:
+                raise RuntimeError('Preview PNGs exceed the 20 MiB retrieval budget')
             manifest['status'] = 'completed; system visibility requires pixel inspection'
             persist()
         except Exception as error:
@@ -181,14 +247,15 @@ def main():
                     except Exception as error:
                         cleanup_errors.append(clean(str(error)))
             manifest['cleanup_errors'] = cleanup_errors
+            if cleanup_errors and not primary_error:
+                manifest['status'] = 'failed'
+                manifest['error'] = 'Disposable simulator cleanup failed'
             persist()
+            log.flush()
+            write_checksums(output)
             if cleanup_errors and not primary_error:
                 raise RuntimeError('Disposable simulator cleanup failed')
-    files = sorted(p for p in output.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
-    (output / 'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(output)}\n' for p in files))
-    if sum(p.stat().st_size for p in (output / 'preview').iterdir()) > 20 * 1024 * 1024:
-        raise RuntimeError('Preview PNGs exceed the 20 MiB retrieval budget')
-    print('Saved 66 component PNGs, contact sheets and native system screenshot attempts. Inspect manifest and pixels.')
+    print('Saved 78 component PNGs, contact sheets and native system screenshot attempts. Inspect manifest and pixels.')
 
 
 if __name__ == '__main__':
