@@ -131,6 +131,9 @@ enum LiveContainerIntegration { static func isHosted() -> Bool { false } }
             self.error = "Production begin guard exit: \(reason)"
             record("select-guard-exit"); return
         }
+        if next.hasArtwork, let artwork = SyntheticArtwork.image {
+            SteamDownloadActivity.shared.cacheArtwork(Image(uiImage: artwork), for: 424_242)
+        }
         fixture = next
         job = .init(appId: next.hasArtwork ? 424_242 : 424_243, name: next.title, completedBytes: next.verified, totalBytes: next.total, phase: next.phase)
         SteamDownloadActivity.shared.begin(job)

@@ -85,6 +85,9 @@ synthetic ActivityKit request captures its actual error domain/code/description
 and immediate underlying error, or ends its accepted Activity immediately.
 That diagnostic attempt is explicitly distinguished from the error discarded by
 production and never satisfies production registration or artwork assertions.
+Each artwork fixture offers the original image to the production cache after
+foreground eligibility is observed. Preparing-state system attempts are also
+included in the small preview artifact when a later UI assertion fails.
 
 The patch step verifies its manifest and patch SHA256, all seven before/after
 source hashes, a clean exact base checkout, and the resulting full Git tree.

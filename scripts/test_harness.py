@@ -257,8 +257,10 @@ class HarnessTests(unittest.TestCase):
                 elif argv[:4] == ['xcrun', 'xcresulttool', 'export', 'attachments']:
                     system = Path(argv[-1]); system.mkdir()
                     (system / 'native.png').write_bytes(png)
+                    (system / 'preparing.png').write_bytes(png)
                     (system / 'attachments.json').write_text(json.dumps([{'attachments': [{
-                        'exportedFileName': 'native.png', 'suggestedHumanReadableName': 'downloading-home-compact-attempt'}]}]))
+                        'exportedFileName': 'native.png', 'suggestedHumanReadableName': 'downloading-home-compact-attempt'}, {
+                        'exportedFileName': 'preparing.png', 'suggestedHumanReadableName': 'preparing-notification-center-lock-style-attempt'}]}]))
                 elif argv[0] == 'sips': Path(argv[-1]).write_bytes(png)
                 return subprocess.CompletedProcess(argv, code, text)
             with patch.object(sys, 'argv', ['capture.py', '--upstream', str(root), '--output', str(output)]), \
@@ -272,11 +274,12 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(manifest['status'], 'failed')
             self.assertEqual(manifest['ui_test_exit_code'], 65)
             self.assertEqual(len(manifest['components']), 78)
-            self.assertEqual(len(manifest['system']), 1)
+            self.assertEqual(len(manifest['system']), 2)
             self.assertEqual(manifest['missing_app_records'], ['app-events.json'])
             self.assertFalse((output / 'app-events.json').exists())
             self.assertTrue((output / 'payload-checks.json').is_file())
             self.assertTrue((output / 'preview/downloading-home-compact-attempt.png').is_file())
+            self.assertTrue((output / 'preview/preparing-notification-center-lock-style-attempt.png').is_file())
             self.assertIn('Exact synthetic XCTest failure', (output / 'commands.log').read_text())
             self.assertTrue(any(cmd[:3] == ['xcrun', 'simctl', 'shutdown'] for cmd in commands))
             self.assertTrue(any(cmd[:3] == ['xcrun', 'simctl', 'delete'] for cmd in commands))

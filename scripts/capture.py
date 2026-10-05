@@ -310,7 +310,7 @@ def main():
                 manifest['system'].append({'file':str(file.relative_to(output)), 'requested_capture':name,
                     'evidence':'actual simulator screenshot; requested surface, not proof of visible Activity',
                     'dimensions':dimensions})
-                if any(tag in name for tag in ['downloading-', 'completed-notification', 'failed-app', 'cancelled-app']):
+                if any(tag in name for tag in ['preparing-', 'downloading-', 'completed-notification', 'failed-app', 'cancelled-app']):
                     slug = re.sub(r'[^a-zA-Z0-9._-]', '-', name)[:100]
                     try:
                         run(['sips', '-Z', '1100', str(file), '--out', str(output / 'preview' / (slug + '.png'))])
