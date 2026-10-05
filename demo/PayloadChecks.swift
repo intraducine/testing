@@ -87,7 +87,7 @@ private struct FixturePayload: Encodable {
               enabled: ActivityAuthorizationInfo().areActivitiesEnabled, hosted: LiveContainerIntegration.isHosted())
     }
     static func waitForForeground(attempts: Int = 300,
-        observe: () -> Observation = { FixtureActivityGate.observe() },
+        observe: @MainActor () -> Observation = { FixtureActivityGate.observe() },
         pause: () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) }) async throws -> Observation {
         var current = observe()
         for _ in 0..<attempts {
